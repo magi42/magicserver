@@ -1,0 +1,395 @@
+#!/bin/bash
+################################################################################
+#    This file is part of the MagiCBuild configuration and build system.       #
+#                                                                              #
+#    Copyright (C) 2003 Marko Grönroos <magi@iki.fi>                           #
+#                                                                              #
+################################################################################
+#                                                                              #
+#   This library is free software; you can redistribute it and/or              #
+#   modify it under the terms of the GNU Library General Public                #
+#   License as published by the Free Software Foundation; either               #
+#   version 2 of the License, or (at your option) any later version.           #
+#                                                                              #
+#   This library is distributed in the hope that it will be useful,            #
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of             #
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU          #
+#   Library General Public License for more details.                           #
+#                                                                              #
+#   You should have received a copy of the GNU Library General Public          #
+#   License along with this library; see the file COPYING.LIB.  If             #
+#   not, write to the Free Software Foundation, Inc., 59 Temple Place          #
+#   - Suite 330, Boston, MA 02111-1307, USA.                                   #
+#                                                                              #
+################################################################################
+
+################################################################################
+# Exits the program
+################################################################################
+function exit_conf () {
+    # Return from subconfiguration
+    if [ $SUBCONF ]; then
+	echo "<<<<<<<<<<<<< Returning from $SUBCONF"
+    fi
+    exit $1
+}
+
+################################################################################
+# Prints help
+################################################################################
+function print_help () {
+    echo "Usage: ./configure [<option> ...]";
+    echo "Where an <Option> is one of the following:"
+    echo "    --help               This help."
+    echo "    --prefix=<path>      Defines installation path. (Default is"
+    echo "                         /usr/local for root and \$HOME for others)"
+    echo "    --debug              Make debug build."
+}
+
+################################################################################
+# Parse command-line arguments
+################################################################################
+BUILDTYPE="release"
+SUBCONFFLAGS=""
+
+while [ "$*" != "" ]; do
+    if [ "${1:0:9}" == "--prefix=" ]; then
+	INSTALLDIR=${1:9};
+    elif [ "${1:0:10}" == "--subconf=" ]; then
+	SUBCONF=${1:10};
+    elif [ "${1:0:11}" == "--mainconf=" ]; then
+	MAINCONF=${1:11};
+    elif [ "$1" == "--debug" ]; then
+	BUILDTYPE="debug"
+	DEBUGBUILD=1
+	SUBCONFFLAGS="$SUBCONFFLAGS --debug"
+    elif [ "$1" == "--help" ]; then
+	print_help;
+	exit_conf 0;
+    else
+	echo "Unknown argument '$1'."
+	print_help;
+	exit_conf 1;
+    fi
+    shift;
+done
+
+################################################################################
+# General definitions
+################################################################################
+# Set builddir
+BUILDDIR="/tmp/$USER/build"
+
+# Set configuration output file name
+if [ $SUBCONF ]; then
+    echo ">>>>>>>>>>>>> Entering $SUBCONF"
+    . $MAINCONF
+    FULLSUBCONFDIR=$BUILDDIR/$PLATFORM-$ARCH/$BUILDTYPE/configs/$SUBCONF
+    mkdir -p $FULLSUBCONFDIR
+    MKCONFIG="$FULLSUBCONFDIR/config.mk"
+else
+    MKCONFIG="build/config.mk"
+fi
+
+# Determine SRCDIR directory
+SRCDIR="`pwd`"
+
+################################################################################
+# Determine correct ARCH
+################################################################################
+if [ $ARCH ] ; then
+    echo "ARCH ok"
+else
+    ARCH=`uname -m`
+fi
+
+################################################################################
+# Determine correct system
+################################################################################
+if [ $PLATFORM ] ; then
+    echo "PLATFORM ok"
+else
+    PLATFORM=`uname -s`
+fi
+
+################################################################################
+# Determine correct MAGICDIR directory
+################################################################################
+if [ $MAGICDIR ] && [ -d $MAGICDIR ] ; then
+    echo "MAGICDIR provided properly."
+else
+    # Not provided, have to resolve
+    #echo "MAGICDIR not provided."
+
+    releasedir="$BUILDDIR/$PLATFORM-$ARCH/$BUILDTYPE"
+
+    # See if it's here; we're compiling magiclib itself
+    if [ -d libmagic ] ; then
+	echo "Compiling MagicLib itself."
+	MAGICDIR="`pwd`"
+	SRCDIR=$MAGICDIR
+    elif [ -d $releasedir/include/magic ] ; then
+	MAGICDIR="$releasedir"
+    fi
+    #elif [ -d ../magic ] ; then
+	#MAGICDIR="`pwd`/../magic"
+    #elif [ -d ../../magic ] ; then
+	#MAGICDIR="`pwd`/../../magic"
+    #fi
+
+    if [ "$MAGICDIR" != "" ]; then
+	echo "MAGICDIR=$MAGICDIR";
+    fi
+fi
+
+################################################################################
+# Determine correct INSTALLDIR directory
+################################################################################
+if [ $INSTALLDIR ] && [ -d $INSTALLDIR ] ; then
+    echo "Installation prefix is $INSTALLDIR"
+else
+    # Not provided, have to resolve
+    if [ $USER == "root" ] ; then
+	INSTALLDIR="/usr/local"
+    else
+	INSTALLDIR=$HOME
+    fi
+
+    echo "INSTALLDIR (--prefix) not provided, using $INSTALLDIR"
+fi
+
+################################################################################
+# Extra directories
+################################################################################
+function add_include_dir () {
+    if [ $EXTRA_INCLUDE_DIRS ] ; then
+	EXTRA_INCLUDE_DIRS="$EXTRA_INCLUDE_DIRS -I$1"
+    else
+	EXTRA_INCLUDE_DIRS="-I$1"
+    fi
+}
+
+function add_library_dir () {
+    if [ $EXTRA_LIB_DIRS ] ; then
+	EXTRA_LIB_DIRS="$EXTRA_LIB_DIRS -L$1"
+    else
+	EXTRA_LIB_DIRS="-L$1"
+    fi
+}
+
+function add_library () {
+    if [ $EXTRA_LIBS ] ; then
+	EXTRA_LIBS="$EXTRA_LIBS -l$1"
+    else
+	EXTRA_LIBS="-l$1"
+    fi
+}
+
+################################################################################
+# Determine C++ compiler
+################################################################################
+function check_for_cpp () {
+    echo -n "checking for c++ compiler... "
+
+    if g++ -v 2>/dev/null ; then
+	CXX="g++"
+    else
+	if gcc -v 2>/dev/null ; then
+	    CXX="gcc"
+	else
+	    echo "No C++ compiler exists"
+	    exit_conf 1
+	fi
+    fi
+
+    # Check C++ compiler version
+    cxx_version_line=`$CXX -v 2>&1| tail -1|cut -d ' ' -f 3`
+    echo "$CXX (version $cxx_version_line)"
+
+    # Find C++ compiler resource path
+    cxx_specs_raw=`$CXX -v 2>&1| head -1`
+    if [[ "$cxx_specs_raw" =~ "built-in" ]]; then
+	cxx_specs=""
+	echo "! WARNING. No path for $CXX. This may lead to problems."
+    else
+	cxx_specs=`echo "$cxx_specs_raw"|cut -d ' ' -f 4`
+        cxx_path=`dirname $cxx_specs`
+        echo "checking $CXX path... $cxx_path"
+    fi
+}
+
+check_for_cpp
+
+################################################################################
+# Check for Qt
+################################################################################
+function check_for_qt () {
+    echo -n "Checking for qt... "
+    QT_DIRS_SET=0
+    QT4=0
+
+    # Check various user and system directories
+    #if [ -d /usr/include/qt4 ] ; then
+#	QTDIR="/usr/lib/qt4"
+#	add_include_dir "/usr/include/qt4"
+#	add_library_dir "/usr/lib"
+#	add_library "QtCore"
+#	QT4=1
+#	QT_DIRS_SET=1
+    if [ -d /usr/include/qt3 ] ; then
+	QTDIR="/usr/lib/qt3"
+	add_include_dir "/usr/include/qt3"
+	QT_DIRS_SET=1
+    elif [ -d /usr/lib/qt-3.1 ] ; then
+	QTDIR="/usr/lib/qt-3.1"
+    elif [ -d /usr/lib/qt3 ] ; then
+	QTDIR="/usr/lib/qt3"
+    elif [ -d /usr/lib/qt2 ] ; then
+	QTDIR="/usr/lib/qt2"
+    elif [ -d /usr/lib/qt ] ; then
+	QTDIR="/usr/lib/qt"
+    fi
+
+    # Make settings if found
+    if [ $QTDIR ] ; then
+        echo "yes"
+	echo "Qt directory is $QTDIR"
+	if [ $QT_DIRS_SET == 0 ] ; then
+	    add_include_dir "$QTDIR/include"
+	    add_library_dir "$QTDIR/lib"
+	fi
+	if [ $QT4 == 0 ] ; then
+	    add_library     "qt-mt"
+	fi
+    else
+        echo "no"
+	echo "ERROR: Qt is required"
+	exit_conf 1
+    fi
+
+    # Try to compile a simple Qt application
+    echo -n "Trying to compile a simple Qt application... "
+    
+    cat > qttest.cc <<EOF
+#include <qapplication.h>
+
+int main (int argc, char* argv[]) {
+    QApplication qapp (argc, argv);
+
+    return 0;
+}
+EOF
+    CMD="$CXX -o qttest qttest.cc $EXTRA_INCLUDE_DIRS $EXTRA_LIB_DIRS $EXTRA_LIBS"
+    if $CMD ; then
+	echo "succeeded"
+    else
+	echo "Checking Qt failed with command:"
+	echo "$CMD"
+	exit_conf 1
+    fi
+
+    # Try to run it
+    echo -n "Trying to run a simple Qt application... "
+    if ./qttest ; then
+	echo "succeeded"
+    else
+	echo "failed"
+	exit_conf 1
+    fi
+
+    rm -f qttest.cc qttest
+}
+
+################################################################################
+# Check for libjpeg
+################################################################################
+function check_for_libjpeg () {
+    echo -n "checking for libjpeg... "
+
+    if   [ -f /usr/lib/libjpeg.a       ] ; then
+	LIBJPEG_FOUND="yes"
+    elif [ -f /usr/local/lib/libjpeg.a ] ; then
+	LIBJPEG_FOUND="yes"
+    else
+	LIBJPEG_FOUND="no"
+    fi
+
+    echo "$LIBJPEG_FOUND"
+
+    # Make settings if found
+    if [ $LIBJPEG_FOUND == "no" ] ; then
+	echo "ERROR: libjpeg is required"
+	exit_conf 1
+    fi
+}
+
+################################################################################
+# Call project-specific configure scripts
+################################################################################
+if [ ! $SUBCONF ]; then
+    if [ -f build/conf-reqs.sh ] ; then
+	. build/conf-reqs.sh
+    fi
+else
+    . $SUBCONF/build/subconf-reqs.sh
+fi
+
+################################################################################
+# Generate config.mk main data
+################################################################################
+echo "creating $MKCONFIG..."
+
+if ! eval echo "#">$MKCONFIG ; then
+    echo "Creating configuration file $MKCONFIG failed."
+    exit_conf 1
+fi
+
+echo "#################################################################################" >> $MKCONFIG
+echo "# This is a configuration generated by 'configure'" >> $MKCONFIG
+echo "#################################################################################" >> $MKCONFIG
+echo "export MAGICDIR=$MAGICDIR" >> $MKCONFIG
+echo "export SRCDIR=$SRCDIR"  >> $MKCONFIG
+echo "export BUILDDIR=$BUILDDIR"  >> $MKCONFIG
+echo "export INSTALLDIR=$INSTALLDIR"  >> $MKCONFIG
+echo "export PLATFORM=$PLATFORM"  >> $MKCONFIG
+echo "export ARCH=$ARCH"  >> $MKCONFIG
+echo "export CXX=$CXX"  >> $MKCONFIG
+echo "export CXX_PATH=$cxx_path"  >> $MKCONFIG
+
+if [ $WRITE_CUSTOM_CONFIG ] ; then
+    $WRITE_CUSTOM_CONFIG
+fi
+
+if [ $DEBUGBUILD ] ; then 
+    echo "export DEBUG=1"  >> $MKCONFIG
+    echo "export BUILDTYPE=debug"  >> $MKCONFIG
+fi
+
+################################################################################
+# Generate rest of config.mk
+################################################################################
+if [ "$EXTRA_INCLUDE_DIRS" ] ; then 
+    echo "export EXTRA_INCLUDE_DIRS=$EXTRA_INCLUDE_DIRS"  >> $MKCONFIG
+fi
+if [ $EXTRA_LIB_DIRS ] ; then 
+    echo "export EXTRA_LIB_DIRS=$EXTRA_LIB_DIRS"  >> $MKCONFIG
+fi
+if [ $EXTRA_LIBS ] ; then 
+    echo "export EXTRA_LIBS=$EXTRA_LIBS"  >> $MKCONFIG
+fi
+
+################################################################################
+# Create subconfigurations
+################################################################################
+if [ ! $SUBCONF ]; then
+    CONFREQFILES=`find . -name 'subconf-reqs.sh'`
+    for CONFREQFILE in $CONFREQFILES; do
+	CONFREQFILE=${CONFREQFILE:2}
+	SUBCONFDIR=${CONFREQFILE/\/build\/subconf-reqs.sh/}
+	./configure --subconf=$SUBCONFDIR --mainconf=$MKCONFIG $SUBCONFFLAGS
+    done
+fi
+
+echo "Done."
+
+exit_conf 0
